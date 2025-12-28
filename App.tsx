@@ -36,14 +36,16 @@ import {
   Upload,
   LogOut,
   LayoutGrid,
-  Clock
+  Clock,
+  CheckSquare,
+  Square
 } from 'lucide-react';
 import { createClient, Session } from '@supabase/supabase-js';
-import { Network, Coin, Wallet as WalletType, Status } from './types';
-import { parseDexScreenerData } from './services/geminiService';
-import { StatsCard } from './components/StatsCard';
-import { NetworkBadge, StatusBadge } from './components/Badge';
-import { Auth } from './components/Auth';
+import { Network, Coin, Wallet as WalletType, Status } from './types.ts';
+import { parseDexScreenerData } from './services/geminiService.ts';
+import { StatsCard } from './components/StatsCard.tsx';
+import { NetworkBadge, StatusBadge } from './components/Badge.tsx';
+import { Auth } from './components/Auth.tsx';
 
 const SUPABASE_URL = 'https://pnstqimjxpjoakqrpcev.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBuc3RxaW1qeHBqb2FrcXJwY2V2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY3MDgwMDQsImV4cCI6MjA4MjI4NDAwNH0.7MOHIxNRj8CwkgN-bVJ4Hr0FNcbyUGGi0wl4IzM1l-o';
@@ -265,11 +267,13 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'watchlist' | 'wallets' | 'wallet_wall'>('watchlist');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterNetwork, setFilterNetwork] = useState<string>('All');
+  const [filterSource, setFilterSource] = useState<string>('All');
   const [filterOnlyFavorites, setFilterOnlyFavorites] = useState(false);
   
   const [coins, setCoins] = useState<Coin[]>([]);
   const [wallets, setWallets] = useState<WalletType[]>([]);
   const [walletWall, setWalletWall] = useState<WalletType[]>([]);
+  const [selectedWalletIds, setSelectedWalletIds] = useState<Set<string>>(new Set());
   
   const [isLoading, setIsLoading] = useState(true);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
@@ -311,6 +315,12 @@ export default function App() {
   useEffect(() => { 
     if (session) fetchData(); 
   }, [session]);
+
+  // Clear selections and filters when tab changes
+  useEffect(() => {
+    setSelectedWalletIds(new Set());
+    setFilterSource('All');
+  }, [activeTab]);
 
   const fetchData = async () => {
     if (!session?.user?.id) return;
@@ -387,12 +397,27 @@ export default function App() {
   const filterList = (list: any[]) => list.filter(item => {
     const matchesSearch = (item.name || item.source || item.address || '').toLowerCase().includes(searchQuery.toLowerCase()) || (item.notes || '').toLowerCase().includes(searchQuery.toLowerCase());
     const matchesFavorite = !filterOnlyFavorites || item.isFavorite;
-    return matchesSearch && matchesFavorite && (filterNetwork === 'All' || item.network === filterNetwork);
+    const matchesNetwork = filterNetwork === 'All' || item.network === filterNetwork;
+    const matchesSource = filterSource === 'All' || item.source === filterSource;
+    
+    // Only apply source filter for wallets tabs
+    if (activeTab === 'watchlist') {
+      return matchesSearch && matchesFavorite && matchesNetwork;
+    }
+    
+    return matchesSearch && matchesFavorite && matchesNetwork && matchesSource;
   });
 
   const filteredCoins = filterList(sortedCoins);
   const filteredWallets = filterList(sortedWallets);
   const filteredWalletWall = filterList(sortedWalletWall);
+
+  // Extract unique sources for the current active wallet tab
+  const availableSources = useMemo(() => {
+    const list = activeTab === 'wallets' ? wallets : (activeTab === 'wallet_wall' ? walletWall : []);
+    const sources = new Set(list.map(w => w.source).filter(s => s && s.trim() !== ''));
+    return Array.from(sources).sort();
+  }, [wallets, walletWall, activeTab]);
 
   const handleParseCoin = async () => {
     if (!newCoinUrl) return;
@@ -480,6 +505,37 @@ export default function App() {
     } 
   };
 
+  // Bulk Selection Logic
+  const toggleSelectWallet = (id: string) => {
+    const newSet = new Set(selectedWalletIds);
+    if (newSet.has(id)) newSet.delete(id);
+    else newSet.add(id);
+    setSelectedWalletIds(newSet);
+  };
+
+  const toggleSelectAllWallets = (list: WalletType[]) => {
+    if (list.every(w => selectedWalletIds.has(w.id))) {
+      setSelectedWalletIds(new Set());
+    } else {
+      const newSet = new Set(selectedWalletIds);
+      list.forEach(w => newSet.add(w.id));
+      setSelectedWalletIds(newSet);
+    }
+  };
+
+  const handleBulkCopy = (list: WalletType[]) => {
+    const addresses = list
+      .filter(w => selectedWalletIds.has(w.id))
+      .map(w => w.address)
+      .join('\n');
+    
+    if (addresses) {
+      navigator.clipboard.writeText(addresses);
+      alert(`${selectedWalletIds.size} wallet addresses copied to clipboard!`);
+      setSelectedWalletIds(new Set()); // Optional: Clear selection after copy
+    }
+  };
+
   const closeCoinModal = () => { setIsCoinModalOpen(false); setEditingCoinId(null); setParsedCoinData(null); setNewCoinUrl(''); setIsManualCoinEntry(false); };
   const closeWalletModal = () => { setIsWalletModalOpen(false); setEditingWalletId(null); setNewWallet(INITIAL_WALLET_STATE); setRawWalletText(''); };
 
@@ -547,88 +603,129 @@ export default function App() {
   if (!session) return <Auth supabase={supabase} />;
 
   // Component to render a list of wallets (reused for Wallets and Wallet Wall tabs)
-  const WalletList = ({ list, table }: { list: WalletType[], table: 'wallets' | 'wallet_wall' }) => (
-    <div className="space-y-4">
-      <div className="flex items-center justify-end gap-4 px-2 py-1 bg-slate-100 dark:bg-dark-card border border-transparent dark:border-dark-border rounded-lg text-xs font-bold text-slate-500 dark:text-slate-400 mb-2 shadow-sm">
-        <span>Sort By:</span>
-        <button onClick={() => handleWalletSort('dateAdded')} className={`flex items-center gap-1 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors ${walletSort.field === 'dateAdded' ? 'text-indigo-600 dark:text-indigo-400' : ''}`}>Date <SortIndicator active={walletSort.field === 'dateAdded'} direction={walletSort.direction} /></button>
-        <button onClick={() => handleWalletSort('winRate')} className={`flex items-center gap-1 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors ${walletSort.field === 'winRate' ? 'text-indigo-600 dark:text-indigo-400' : ''}`}>Win Rate <SortIndicator active={walletSort.field === 'winRate'} direction={walletSort.direction} /></button>
-        <button onClick={() => handleWalletSort('multiplier')} className={`flex items-center gap-1 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors ${walletSort.field === 'multiplier' ? 'text-indigo-600 dark:text-indigo-400' : ''}`}>Multiplier <SortIndicator active={walletSort.field === 'multiplier'} direction={walletSort.direction} /></button>
-      </div>
-      {list.map((wallet, index) => {
-        const prevWallet = list[index - 1];
-        const currentDateKey = getDateKey(wallet.dateAdded);
-        const prevDateKey = prevWallet ? getDateKey(prevWallet.dateAdded) : null;
-        const showDivider = currentDateKey !== prevDateKey;
-        const linkUrl = ensureValidUrl(wallet.customLink);
-        const gmgnUrl = ensureValidUrl(wallet.gmgnLink);
+  const WalletList = ({ list, table }: { list: WalletType[], table: 'wallets' | 'wallet_wall' }) => {
+    const isAllSelected = list.length > 0 && list.every(w => selectedWalletIds.has(w.id));
+    const selectedCount = list.filter(w => selectedWalletIds.has(w.id)).length;
 
-        return (
-          <React.Fragment key={wallet.id}>
-            {showDivider && <DateSeparator dateStr={wallet.dateAdded} />}
-            <div className={`bg-white dark:bg-dark-card p-6 rounded-xl shadow-sm border transition-all hover:shadow-md dark:shadow-none dark:hover:bg-dark-hover ${wallet.isFavorite ? 'border-amber-200 ring-1 ring-amber-100 dark:border-amber-900/50 dark:ring-amber-900/20' : 'border-slate-200 dark:border-dark-border'}`}>
-              <div className="flex flex-col lg:flex-row justify-between gap-6">
-                <div className="flex-1">
-                  <div className="flex items-center gap-3 mb-4 flex-wrap">
-                    <button onClick={() => toggleFavorite(wallet.id, !!wallet.isFavorite, table)} className="transition-colors">
-                      <Star size={20} className={`${wallet.isFavorite ? 'text-amber-500 fill-amber-500' : 'text-slate-200 dark:text-slate-700 hover:text-amber-400'}`} />
+    return (
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-4 bg-slate-100 dark:bg-dark-card border border-transparent dark:border-dark-border rounded-lg px-3 py-2 shadow-sm mb-2">
+          {/* Bulk Action Left Side */}
+          <div className="flex items-center gap-3">
+             <button 
+                onClick={() => toggleSelectAllWallets(list)} 
+                className="flex items-center gap-2 text-xs font-bold text-slate-500 hover:text-indigo-600 dark:text-slate-400 dark:hover:text-indigo-400 transition-colors"
+             >
+                {isAllSelected ? <CheckSquare size={16} className="text-indigo-600 dark:text-indigo-400" /> : <Square size={16} />}
+                Select All
+             </button>
+             {selectedCount > 0 && (
+                <>
+                  <div className="w-px h-4 bg-slate-300 dark:bg-slate-700"></div>
+                  <button 
+                    onClick={() => handleBulkCopy(list)} 
+                    className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1.5 rounded-md font-bold transition-all shadow-sm animate-in fade-in zoom-in duration-200"
+                  >
+                    <Copy size={12} />
+                    Copy Selected ({selectedCount})
+                  </button>
+                </>
+             )}
+          </div>
+
+          {/* Sort Right Side */}
+          <div className="flex items-center gap-4 text-xs font-bold text-slate-500 dark:text-slate-400">
+            <span>Sort By:</span>
+            <button onClick={() => handleWalletSort('dateAdded')} className={`flex items-center gap-1 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors ${walletSort.field === 'dateAdded' ? 'text-indigo-600 dark:text-indigo-400' : ''}`}>Date <SortIndicator active={walletSort.field === 'dateAdded'} direction={walletSort.direction} /></button>
+            <button onClick={() => handleWalletSort('winRate')} className={`flex items-center gap-1 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors ${walletSort.field === 'winRate' ? 'text-indigo-600 dark:text-indigo-400' : ''}`}>Win Rate <SortIndicator active={walletSort.field === 'winRate'} direction={walletSort.direction} /></button>
+            <button onClick={() => handleWalletSort('multiplier')} className={`flex items-center gap-1 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors ${walletSort.field === 'multiplier' ? 'text-indigo-600 dark:text-indigo-400' : ''}`}>Multiplier <SortIndicator active={walletSort.field === 'multiplier'} direction={walletSort.direction} /></button>
+          </div>
+        </div>
+
+        {list.map((wallet, index) => {
+          const prevWallet = list[index - 1];
+          const currentDateKey = getDateKey(wallet.dateAdded);
+          const prevDateKey = prevWallet ? getDateKey(prevWallet.dateAdded) : null;
+          const showDivider = currentDateKey !== prevDateKey;
+          const linkUrl = ensureValidUrl(wallet.customLink);
+          const gmgnUrl = ensureValidUrl(wallet.gmgnLink);
+          const isSelected = selectedWalletIds.has(wallet.id);
+
+          return (
+            <React.Fragment key={wallet.id}>
+              {showDivider && <DateSeparator dateStr={wallet.dateAdded} />}
+              <div className={`group relative bg-white dark:bg-dark-card p-6 rounded-xl shadow-sm border transition-all hover:shadow-md dark:shadow-none dark:hover:bg-dark-hover ${isSelected ? 'border-indigo-500 ring-1 ring-indigo-500 bg-indigo-50/50 dark:bg-indigo-900/10' : (wallet.isFavorite ? 'border-amber-200 ring-1 ring-amber-100 dark:border-amber-900/50 dark:ring-amber-900/20' : 'border-slate-200 dark:border-dark-border')}`}>
+                
+                {/* Checkbox Overlay/Side */}
+                <div className="absolute left-3 top-6 bottom-0 w-8 flex flex-col items-center">
+                    <button onClick={() => toggleSelectWallet(wallet.id)} className="text-slate-300 hover:text-indigo-600 dark:text-slate-600 dark:hover:text-indigo-400 transition-colors">
+                        {isSelected ? <CheckSquare size={20} className="text-indigo-600 dark:text-indigo-400 fill-white dark:fill-dark-card" /> : <Square size={20} />}
                     </button>
-                    <NetworkBadge network={wallet.network} />
-                    {linkUrl ? (
-                      <a href={linkUrl} target="_blank" rel="noopener noreferrer" className="font-bold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1 transition-colors">
-                        {wallet.source} <ExternalLink size={12} />
-                      </a>
-                    ) : (
-                      <span className="font-bold text-slate-700 dark:text-white">{wallet.source}</span>
-                    )}
-                    <span className="font-mono text-slate-400 dark:text-slate-500 text-[10px] bg-slate-50 dark:bg-dark-bg px-2 py-1 rounded border border-slate-100 dark:border-dark-border">{wallet.address}</span>
-                    <CopyButton text={wallet.address} />
-                    <StatusBadge status={wallet.status} />
-                  </div>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-4">
-                    <div><span className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 block mb-1 tracking-wider">Buy Vol</span><span className="font-bold text-blue-600 dark:text-blue-400">{wallet.buyVolume || '$0'}</span></div>
-                    <div><span className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 block mb-1 tracking-wider">Sell Vol</span><span className="font-bold text-rose-600 dark:text-rose-400">{wallet.sellVolume || '$0'}</span></div>
-                    <div><span className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 block mb-1 tracking-wider">Profit</span><span className={`font-extrabold text-lg ${wallet.profit.startsWith('+') ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>{wallet.profit || '$0'}</span></div>
-                    <div><span className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 block mb-1 tracking-wider">Mult.</span><span className="font-extrabold text-indigo-600 dark:text-indigo-400">{wallet.multiplier}</span></div>
-                  </div>
-                  
-                  {wallet.notes && (
-                    <div className="bg-slate-50 dark:bg-dark-bg p-3 rounded-lg border border-slate-100 dark:border-dark-border mb-4">
-                        <p className="text-xs text-slate-600 dark:text-slate-400 flex gap-2"><StickyNote size={14} className="text-indigo-400 shrink-0" /> {wallet.notes}</p>
-                    </div>
-                  )}
-
-                  <div className="flex gap-4 text-[10px] text-slate-400 dark:text-slate-500 font-bold border-t border-slate-50 dark:border-dark-border pt-3">
-                      <div className="flex items-center gap-1"><Calendar size={12} /> {formatMiladiDate(wallet.dateAdded)} / {formatShamsiDate(wallet.dateAdded)}</div>
-                      {(wallet.age && wallet.age !== 'New') && <div className="flex items-center gap-1"><Clock size={12} /> {wallet.age}</div>}
-                  </div>
                 </div>
-                <div className="flex items-center gap-6 border-t lg:border-t-0 lg:border-l border-slate-100 dark:border-dark-border pt-4 lg:pt-0 pl-0 lg:pl-8 shrink-0">
-                    <div className="flex items-center gap-4">
-                      <div className="text-right"><span className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 block tracking-wider">Win Rate</span><span className="font-bold text-slate-700 dark:text-slate-300">Performance</span></div>
-                      <WinRateGauge rate={wallet.winRate} />
+
+                <div className="flex flex-col lg:flex-row justify-between gap-6 pl-8">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3 mb-4 flex-wrap">
+                      <button onClick={() => toggleFavorite(wallet.id, !!wallet.isFavorite, table)} className="transition-colors">
+                        <Star size={20} className={`${wallet.isFavorite ? 'text-amber-500 fill-amber-500' : 'text-slate-200 dark:text-slate-700 hover:text-amber-400'}`} />
+                      </button>
+                      <NetworkBadge network={wallet.network} />
+                      {linkUrl ? (
+                        <a href={linkUrl} target="_blank" rel="noopener noreferrer" className="font-bold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1 transition-colors">
+                          {wallet.source} <ExternalLink size={12} />
+                        </a>
+                      ) : (
+                        <span className="font-bold text-slate-700 dark:text-white">{wallet.source}</span>
+                      )}
+                      <span className="font-mono text-slate-400 dark:text-slate-500 text-[10px] bg-slate-50 dark:bg-dark-bg px-2 py-1 rounded border border-slate-100 dark:border-dark-border">{wallet.address}</span>
+                      <CopyButton text={wallet.address} />
+                      <StatusBadge status={wallet.status} />
                     </div>
-                    <div className="flex gap-2">
-                    {gmgnUrl && (
-                      <a href={gmgnUrl} target="_blank" rel="noopener noreferrer" className="p-3 text-emerald-500 hover:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-xl transition-all" title="Open GMGN"><Rocket size={20} /></a>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-4">
+                      <div><span className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 block mb-1 tracking-wider">Buy Vol</span><span className="font-bold text-blue-600 dark:text-blue-400">{wallet.buyVolume || '$0'}</span></div>
+                      <div><span className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 block mb-1 tracking-wider">Sell Vol</span><span className="font-bold text-rose-600 dark:text-rose-400">{wallet.sellVolume || '$0'}</span></div>
+                      <div><span className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 block mb-1 tracking-wider">Profit</span><span className={`font-extrabold text-lg ${wallet.profit.startsWith('+') ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>{wallet.profit || '$0'}</span></div>
+                      <div><span className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 block mb-1 tracking-wider">Mult.</span><span className="font-extrabold text-indigo-600 dark:text-indigo-400">{wallet.multiplier}</span></div>
+                    </div>
+                    
+                    {wallet.notes && (
+                      <div className="bg-slate-50 dark:bg-dark-bg p-3 rounded-lg border border-slate-100 dark:border-dark-border mb-4">
+                          <p className="text-xs text-slate-600 dark:text-slate-400 flex gap-2"><StickyNote size={14} className="text-indigo-400 shrink-0" /> {wallet.notes}</p>
+                      </div>
                     )}
-                    <button onClick={() => { setEditingWalletId(wallet.id); setNewWallet({ ...wallet }); setIsWalletModalOpen(true); }} className="p-3 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-xl transition-all" title="Edit Wallet"><Pencil size={20} /></button>
-                    <button onClick={() => deleteItem(wallet.id, table)} className="p-3 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-xl transition-all" title="Delete Wallet"><Trash2 size={20} /></button>
+
+                    <div className="flex gap-4 text-[10px] text-slate-400 dark:text-slate-500 font-bold border-t border-slate-50 dark:border-dark-border pt-3">
+                        <div className="flex items-center gap-1"><Calendar size={12} /> {formatMiladiDate(wallet.dateAdded)} / {formatShamsiDate(wallet.dateAdded)}</div>
+                        {(wallet.age && wallet.age !== 'New') && <div className="flex items-center gap-1"><Clock size={12} /> {wallet.age}</div>}
                     </div>
+                  </div>
+                  <div className="flex items-center gap-6 border-t lg:border-t-0 lg:border-l border-slate-100 dark:border-dark-border pt-4 lg:pt-0 pl-0 lg:pl-8 shrink-0">
+                      <div className="flex items-center gap-4">
+                        <div className="text-right"><span className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 block tracking-wider">Win Rate</span><span className="font-bold text-slate-700 dark:text-slate-300">Performance</span></div>
+                        <WinRateGauge rate={wallet.winRate} />
+                      </div>
+                      <div className="flex gap-2">
+                      {gmgnUrl && (
+                        <a href={gmgnUrl} target="_blank" rel="noopener noreferrer" className="p-3 text-emerald-500 hover:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-xl transition-all" title="Open GMGN"><Rocket size={20} /></a>
+                      )}
+                      <button onClick={() => { setEditingWalletId(wallet.id); setNewWallet({ ...wallet }); setIsWalletModalOpen(true); }} className="p-3 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-xl transition-all" title="Edit Wallet"><Pencil size={20} /></button>
+                      <button onClick={() => deleteItem(wallet.id, table)} className="p-3 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-xl transition-all" title="Delete Wallet"><Trash2 size={20} /></button>
+                      </div>
+                  </div>
                 </div>
               </div>
+            </React.Fragment>
+          );
+        })}
+        {list.length === 0 && !isLoading && (
+            <div className="p-12 text-center text-slate-400 dark:text-slate-600 flex flex-col items-center gap-3 bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border rounded-xl">
+              <LayoutGrid size={48} className="text-slate-200 dark:text-slate-700" />
+              <p>No items found in this section.</p>
             </div>
-          </React.Fragment>
-        );
-      })}
-      {list.length === 0 && !isLoading && (
-          <div className="p-12 text-center text-slate-400 dark:text-slate-600 flex flex-col items-center gap-3 bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border rounded-xl">
-            <LayoutGrid size={48} className="text-slate-200 dark:text-slate-700" />
-            <p>No items found in this section.</p>
-          </div>
-      )}
-    </div>
-  );
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="h-screen w-full bg-slate-50 dark:bg-dark-bg text-slate-900 dark:text-dark-text flex flex-col font-sans overflow-hidden transition-colors duration-200">
@@ -700,6 +797,15 @@ export default function App() {
                   <option value="All">All Networks</option>
                   {Object.values(Network).map(n => <option key={n} value={n}>{n}</option>)}
                 </select>
+                
+                {/* Source Filter - Only visible in Wallets Tabs */}
+                {activeTab !== 'watchlist' && (
+                  <select value={filterSource} onChange={e=>setFilterSource(e.target.value)} className="px-3 py-2 border border-slate-200 dark:border-dark-border rounded-lg text-sm outline-none bg-white dark:bg-dark-bg text-slate-900 dark:text-white">
+                    <option value="All">All Sources</option>
+                    {availableSources.map(source => <option key={source} value={source}>{source}</option>)}
+                  </select>
+                )}
+
                 <button 
                   onClick={() => setFilterOnlyFavorites(!filterOnlyFavorites)} 
                   className={`flex items-center gap-2 px-4 py-2 border rounded-lg text-sm transition-all ${filterOnlyFavorites ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400' : 'bg-white dark:bg-dark-bg border-slate-200 dark:border-dark-border text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-dark-hover'}`}

@@ -56,14 +56,11 @@
       }
     </style>
     <script>
-      // Polyfill for global and process to fix "white screen" issues on Netlify
-      window.global = window;
-      window.process = window.process || {
-        env: { NODE_ENV: 'production' },
-        version: '',
-        browser: true,
-        cwd: function() { return '/'; }
-      };
+      window.process = window.process || {};
+      window.process.env = window.process.env || {};
+      window.process.browser = true;
+      window.process.version = "";
+      window.process.cwd = function() { return "/"; };
     </script>
   <script type="importmap">
 {
